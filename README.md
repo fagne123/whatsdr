@@ -330,3 +330,4 @@ Seu objetivo é:
 **Desenvolvido com ❤️ usando Asterisk + Node.js + IA**
 # whatsdr
 # whatsdr
+# whatsdr
