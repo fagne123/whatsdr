@@ -1,20 +1,21 @@
-# Planejamento do Sistema LigAI - Nurturing Completo
+# Planejamento do Sistema de Nurturing - Integração com LigAI
 
 ## Sumário
 
 1. [Visão Geral](#1-visão-geral)
 2. [Arquitetura do Sistema](#2-arquitetura-do-sistema)
-3. [Fluxo de Nurturing](#3-fluxo-de-nurturing)
-4. [Sistema de Fila Automática](#4-sistema-de-fila-automática)
-5. [Flow Builder](#5-flow-builder)
-6. [Monitoramento de Ligações](#6-monitoramento-de-ligações)
-7. [Interface do CRM](#7-interface-do-crm)
-8. [Integrações Externas](#8-integrações-externas)
-9. [Banco de Dados](#9-banco-de-dados)
-10. [Estrutura de Arquivos](#10-estrutura-de-arquivos)
-11. [API Endpoints](#11-api-endpoints)
-12. [Fases de Implementação](#12-fases-de-implementação)
-13. [Variáveis de Ambiente](#13-variáveis-de-ambiente)
+3. [Integração LigAI ↔ Nurturing](#3-integração-ligai--nurturing)
+4. [Fluxo de Nurturing](#4-fluxo-de-nurturing)
+5. [Sistema de Fila Automática](#5-sistema-de-fila-automática)
+6. [Flow Builder](#6-flow-builder)
+7. [Histórico de Ligações](#7-histórico-de-ligações)
+8. [Interface do CRM](#8-interface-do-crm)
+9. [Integrações Externas](#9-integrações-externas)
+10. [Banco de Dados](#10-banco-de-dados)
+11. [Estrutura de Arquivos](#11-estrutura-de-arquivos)
+12. [API Endpoints](#12-api-endpoints)
+13. [Fases de Implementação](#13-fases-de-implementação)
+14. [Variáveis de Ambiente](#14-variáveis-de-ambiente)
 
 ---
 
@@ -22,116 +23,162 @@
 
 ### 1.1 Objetivo
 
-Expandir o LigAI existente (sistema de ligações com IA via Asterisk) para um **sistema completo de nurturing de leads**, integrando múltiplas plataformas e canais de comunicação.
+Criar um **Sistema de Nurturing independente** que se conecta ao LigAI existente via **API e Webhook**, sem modificar a estrutura core do LigAI. Essa arquitetura permite:
+
+- **Isolamento**: LigAI continua funcionando de forma independente
+- **Escalabilidade**: Cada sistema pode escalar separadamente
+- **Manutenção**: Atualizações em um não afetam o outro
+- **Flexibilidade**: Nurturing pode conectar com outros sistemas de ligação no futuro
 
 ### 1.2 Filosofia do Sistema
 
 > **"Ligação SEMPRE primeiro. WhatsApp apenas como fallback quando o lead não atende OU quando a IA não consegue convencer através da ligação."**
 
-### 1.3 Componentes Principais
+### 1.3 Arquitetura de Dois Sistemas
 
-| Componente | Função |
-|------------|--------|
-| **LigAI (existente)** | Ligações com IA via Asterisk/AudioSocket |
-| **Queue Service** | Fila automática com regras de processamento |
-| **Nurturing Engine** | Controle de timing e status dos leads |
-| **Flow Builder** | Automação visual de mensagens WhatsApp |
-| **CRM Interno** | Interface para acompanhamento de leads |
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                         DOIS SISTEMAS INDEPENDENTES                          │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                              │
+│  ┌─────────────────────────────────┐     ┌─────────────────────────────────┐│
+│  │                                 │     │                                 ││
+│  │  📞 LIGAI (Existente)           │     │  🔄 NURTURING (Novo)            ││
+│  │     Port: 3000                  │     │     Port: 3001                  ││
+│  │                                 │     │                                 ││
+│  │  • AudioSocket Server           │ API │  • Queue Service                ││
+│  │  • Groq Whisper STT             │ ←── │  • Nurturing Engine             ││
+│  │  • OpenRouter LLM               │     │  • Flow Builder                 ││
+│  │  • ElevenLabs TTS               │ ──→ │  • WhatsApp Service             ││
+│  │  • Asterisk AMI                 │ WH  │  • CRM/Dashboard                ││
+│  │                                 │     │                                 ││
+│  └─────────────────────────────────┘     └─────────────────────────────────┘│
+│                                                                              │
+│  Comunicação: HTTP API + Webhook (sem WebSocket em tempo real)              │
+│  Latência adicional: ~10-50ms (insignificante para o fluxo)                 │
+│                                                                              │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
 
-### 1.4 Integrações
+### 1.4 Componentes por Sistema
 
-| Sistema | Função |
-|---------|--------|
-| **ABC Station** | Fonte de leads (webhook de entrada) |
-| **Belle Software** | CRM externo para agendamentos |
-| **WhatsApp Meta Cloud API** | Canal de fallback para mensagens |
-| **Asterisk PBX** | Sistema de telefonia (já integrado) |
+| Sistema | Componente | Função |
+|---------|------------|--------|
+| **LigAI** | AudioSocket Server | Comunicação com Asterisk |
+| **LigAI** | STT/TTS Services | Transcrição e síntese de voz |
+| **LigAI** | Call Manager | Gerencia ligações ativas |
+| **LigAI** | API REST + Webhook | Comunicação com sistema externo |
+| **Nurturing** | Queue Service | Fila automática com regras |
+| **Nurturing** | Nurturing Engine | Controle de timing e status |
+| **Nurturing** | Flow Builder | Automação visual WhatsApp |
+| **Nurturing** | CRM/Dashboard | Interface para operadores |
+
+### 1.5 Integrações
+
+| Sistema | Conecta Com | Tipo | Função |
+|---------|-------------|------|--------|
+| **Nurturing** | LigAI | API + Webhook | Originar ligações e receber resultados |
+| **Nurturing** | ABC Station | Webhook entrada | Fonte de leads |
+| **Nurturing** | Belle Software | API REST | CRM para agendamentos |
+| **Nurturing** | WhatsApp Meta | API + Webhook | Canal de fallback |
 
 ---
 
 ## 2. Arquitetura do Sistema
 
-### 2.1 Diagrama Geral
+### 2.1 Diagrama Geral - Dois Sistemas Separados
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
-│                              ENTRADA DE LEADS                                │
+│                     SISTEMA NURTURING (Novo - Port 3001)                     │
 ├─────────────────────────────────────────────────────────────────────────────┤
-│  ABC Station ──────► POST /api/webhooks/abc-station                          │
-│  WhatsApp ─────────► POST /api/webhooks/whatsapp                             │
-│  Manual ───────────► POST /api/leads                                         │
+│                                                                              │
+│  ┌─────────────────────────────────────────────────────────────────────┐    │
+│  │                        ENTRADA DE LEADS                              │    │
+│  │  ABC Station ──────► POST /api/webhooks/abc-station                  │    │
+│  │  WhatsApp ─────────► POST /api/webhooks/whatsapp                     │    │
+│  │  Manual ───────────► POST /api/leads                                 │    │
+│  └─────────────────────────────────────────────────────────────────────┘    │
+│                                      │                                       │
+│                                      ▼                                       │
+│  ┌─────────────────────────────────────────────────────────────────────┐    │
+│  │                    QUEUE SERVICE (Fila Automática)                   │    │
+│  │  • Lead entra na fila com status "AGUARDANDO_INICIO"                 │    │
+│  │  • Verifica regras: horário comercial, limite simultâneo             │    │
+│  │  • Se OK → Dispara ligação via API do LigAI                          │    │
+│  └─────────────────────────────────────────────────────────────────────┘    │
+│                                      │                                       │
+│                                      ▼                                       │
+│  ┌─────────────────────────────────────────────────────────────────────┐    │
+│  │                    NURTURING ENGINE (Lógica Fixa)                    │    │
+│  │  • Controla timing (0h, 24h, 48h, 72h, Loop)                         │    │
+│  │  • Dispara ligações via API do LigAI (HTTP POST)                     │    │
+│  │  • Recebe resultados via Webhook (após fim da ligação)               │    │
+│  │  • Gerencia status do lead                                           │    │
+│  └─────────────────────────────────────────────────────────────────────┘    │
+│                                      │                                       │
+│                     ┌────────────────┴────────────────┐                      │
+│                     ▼                                 ▼                      │
+│  ┌──────────────────────────────┐   ┌──────────────────────────────┐        │
+│  │       FLOW BUILDER            │   │      WHATSAPP SERVICE        │        │
+│  │       (Configurável)          │   │      (Meta Cloud API)        │        │
+│  │  • Templates WhatsApp         │──►│  • Envio de mensagens        │        │
+│  │  • Mídia (texto/vídeo/img)    │   │  • Recebimento (webhook)     │        │
+│  │  • Janelas de horário         │   │  • Botões interativos        │        │
+│  └──────────────────────────────┘   └──────────────────────────────┘        │
+│                                                                              │
+│                                      │                                       │
+│                                      ▼                                       │
+│  ┌─────────────────────────────────────────────────────────────────────┐    │
+│  │                     BELLE SOFTWARE (CRM Externo)                     │    │
+│  │  • Criar/Atualizar Clientes  • Criar Agendamentos                    │    │
+│  └─────────────────────────────────────────────────────────────────────┘    │
+│                                                                              │
 └─────────────────────────────────────────────────────────────────────────────┘
-                                     │
-                                     ▼
+                                       │
+                               HTTP API │ POST /api/calls/originate
+                                       │ (envia: phone, leadId, webhookUrl)
+                                       │
+                                       ▼
 ┌─────────────────────────────────────────────────────────────────────────────┐
-│                       QUEUE SERVICE (Fila Automática)                        │
+│                     SISTEMA LIGAI (Existente - Port 3000)                    │
 ├─────────────────────────────────────────────────────────────────────────────┤
-│  • Lead entra na fila com status "AGUARDANDO_INICIO"                         │
-│  • Verifica regras: horário comercial, limite simultâneo, intervalo          │
-│  • Se OK → Inicia Passo 1 automaticamente                                    │
-│  • Se não → Agenda para próximo horário válido                               │
-│  • Controla ligações ativas em tempo real                                    │
+│                                                                              │
+│  ┌─────────────────────────────────────────────────────────────────────┐    │
+│  │                         API REST                                     │    │
+│  │  POST /api/calls/originate → Recebe pedido do Nurturing              │    │
+│  │  GET  /api/calls/:id/audio → Download do áudio gravado               │    │
+│  └─────────────────────────────────────────────────────────────────────┘    │
+│                                      │                                       │
+│                                      ▼                                       │
+│  ┌─────────────────────────────────────────────────────────────────────┐    │
+│  │                      CALL MANAGER                                    │    │
+│  │  • Origina ligação via AMI/Asterisk                                  │    │
+│  │  • Gerencia AudioSocket (port 9092)                                  │    │
+│  │  • Grava áudio da ligação                                            │    │
+│  │  • Ao finalizar → Dispara Webhook para Nurturing                     │    │
+│  └─────────────────────────────────────────────────────────────────────┘    │
+│                                      │                                       │
+│         ┌────────────────────────────┼────────────────────────────┐          │
+│         ▼                            ▼                            ▼          │
+│  ┌─────────────┐            ┌─────────────┐            ┌─────────────┐       │
+│  │ Groq STT    │            │ OpenRouter  │            │ ElevenLabs  │       │
+│  │ (Whisper)   │            │ (Claude AI) │            │ (TTS)       │       │
+│  └─────────────┘            └─────────────┘            └─────────────┘       │
+│                                                                              │
 └─────────────────────────────────────────────────────────────────────────────┘
-                                     │
-                                     ▼
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                       NURTURING ENGINE (Lógica Fixa)                         │
-├─────────────────────────────────────────────────────────────────────────────┤
-│  • Controla timing (0h, 24h, 48h, 72h, Loop)                                 │
-│  • Executa ligações via LigAI                                                │
-│  • Detecta: atendeu+agendou / atendeu+não convenceu / não atendeu            │
-│  • Se não atendeu OU não convenceu → DISPARA FLOW BUILDER                    │
-│  • Gerencia status do lead                                                   │
-└─────────────────────────────────────────────────────────────────────────────┘
-                                     │
-                     ┌───────────────┴───────────────┐
-                     ▼                               ▼
-┌─────────────────────────────┐     ┌─────────────────────────────┐
-│      CANAL: TELEFONE         │     │        FLOW BUILDER         │
-│      (LigAI Existente)       │     │        (Configurável)       │
-├─────────────────────────────┤     ├─────────────────────────────┤
-│ • AudioSocket (port 9092)    │     │ • Templates WhatsApp        │
-│ • Groq Whisper STT           │     │ • Mídia (texto/vídeo/img)   │
-│ • OpenRouter AI (Claude)     │     │ • Janelas de horário        │
-│ • Murf TTS                   │     │ • Botões interativos        │
-│ • AMI (Asterisk Manager)     │     │ • Condições e delays        │
-└─────────────────────────────┘     └─────────────────────────────┘
-             │                                    │
-             │                                    ▼
-             │                      ┌─────────────────────────────┐
-             │                      │      WHATSAPP SERVICE       │
-             │                      │      (Meta Cloud API)       │
-             │                      ├─────────────────────────────┤
-             │                      │ • Envio de mensagens        │
-             │                      │ • Recebimento (webhook)     │
-             │                      │ • Mídia (vídeo/imagem)      │
-             │                      │ • Botões interativos        │
-             │                      └─────────────────────────────┘
-             │                                    │
-             │                                    ▼
-             │                      ┌─────────────────────────────┐
-             │                      │      Lead respondeu?        │
-             │                      └─────────────────────────────┘
-             │                           │              │
-             │                          SIM            NÃO
-             │                           ▼              ▼
-             │                ┌──────────────┐  ┌──────────────────┐
-             │                │  IA ASSUME   │  │ Aguarda timeout  │
-             │                │  CONVERSA    │  │ → Próximo passo  │
-             │                └──────────────┘  └──────────────────┘
-             │                           │
-             └───────────────────────────┴───────────────┐
-                                                         ▼
-                                 ┌─────────────────────────────────────┐
-                                 │         BELLE SOFTWARE (CRM)        │
-                                 ├─────────────────────────────────────┤
-                                 │ • Criar/Atualizar Clientes          │
-                                 │ • Criar Agendamentos                │
-                                 │ • Consultar Serviços/Planos         │
-                                 └─────────────────────────────────────┘
+                                       │
+                               WEBHOOK  │ POST {webhookUrl}
+                                       │ (envia: callId, status, transcript,
+                                       │  audioUrl, timing, outcome)
+                                       ▼
+                    ┌──────────────────────────────────────────┐
+                    │         NURTURING recebe resultado       │
+                    │    Atualiza lead → Próxima ação          │
+                    └──────────────────────────────────────────┘
 ```
 
-### 2.2 Fluxo de Dados
+### 2.2 Fluxo de Dados - Comunicação API/Webhook
 
 ```
 Lead ABC Station
@@ -141,11 +188,19 @@ Lead ABC Station
                                             │
                     ┌───────────────────────┼───────────────────────┐
                     ▼                       ▼                       ▼
-             [Aguarda Regras]         [Inicia Ligação]        [Agenda Futuro]
+             [Aguarda Regras]    [POST /api/calls/originate]  [Agenda Futuro]
                     │                       │
+                    │                       ▼ (HTTP para LigAI)
+                    │              ┌────────────────────────┐
+                    │              │  LIGAI processa ligação │
+                    │              │  (totalmente autônomo)  │
+                    │              └────────────────────────┘
+                    │                       │
+                    │                       ▼ (Webhook retorno)
                     └───────────────────────┤
                                             ▼
                                     [Nurturing Engine]
+                                    [Processa resultado do webhook]
                                             │
                     ┌───────────────────────┼───────────────────────┐
                     ▼                       ▼                       ▼
@@ -174,9 +229,213 @@ Lead ABC Station
 
 ---
 
-## 3. Fluxo de Nurturing
+## 3. Integração LigAI ↔ Nurturing
 
-### 3.1 Timeline dos 5 Passos
+### 3.1 Visão Geral da Comunicação
+
+O Sistema Nurturing se comunica com o LigAI através de dois mecanismos:
+
+| Direção | Mecanismo | Quando | Latência |
+|---------|-----------|--------|----------|
+| **Nurturing → LigAI** | HTTP POST API | Originar ligação | ~10-50ms |
+| **LigAI → Nurturing** | Webhook POST | Após fim da ligação | ~10-50ms |
+
+**Importante**: Não há monitoramento em tempo real. O Nurturing só recebe informações após a ligação terminar.
+
+### 3.2 API do LigAI (Endpoints Necessários)
+
+#### POST /api/calls/originate
+
+Endpoint para o Nurturing solicitar uma nova ligação.
+
+**Request:**
+```json
+{
+  "phone": "+5584991516506",
+  "leadId": "lead-uuid-123",
+  "step": 1,
+  "webhookUrl": "http://nurturing:3001/api/webhooks/ligai-result",
+  "context": {
+    "leadName": "João Silva",
+    "serviceInterest": "Precatórios",
+    "previousAttempts": 0
+  }
+}
+```
+
+**Response (imediata):**
+```json
+{
+  "success": true,
+  "callId": "call-uuid-456",
+  "status": "initiating",
+  "message": "Ligação sendo iniciada"
+}
+```
+
+#### GET /api/calls/:id/audio
+
+Endpoint para download do áudio gravado.
+
+**Response:** Arquivo PCM/WAV da ligação gravada.
+
+### 3.3 Webhook do LigAI (Resultado da Ligação)
+
+Quando a ligação termina, o LigAI dispara um webhook para o URL informado.
+
+**POST para webhookUrl (após fim da ligação):**
+```json
+{
+  "callId": "call-uuid-456",
+  "leadId": "lead-uuid-123",
+  "step": 1,
+
+  "timing": {
+    "startedAt": "2024-12-23T14:00:00Z",
+    "answeredAt": "2024-12-23T14:00:15Z",
+    "endedAt": "2024-12-23T14:05:30Z",
+    "ringDuration": 15,
+    "callDuration": 315
+  },
+
+  "result": {
+    "status": "completed",
+    "outcome": "converted",
+    "endReason": "normal_hangup",
+    "wasAnswered": true
+  },
+
+  "transcript": [
+    {
+      "role": "ai",
+      "content": "Olá, aqui é da Addebitare...",
+      "timestamp": "2024-12-23T14:00:16Z"
+    },
+    {
+      "role": "lead",
+      "content": "Oi, tudo bem?",
+      "timestamp": "2024-12-23T14:00:20Z"
+    }
+  ],
+
+  "audio": {
+    "available": true,
+    "url": "http://ligai:3000/api/calls/call-uuid-456/audio",
+    "durationSeconds": 315,
+    "format": "wav"
+  },
+
+  "analysis": {
+    "sentiment": "positive",
+    "objections": ["tempo de espera"],
+    "conversionIndicators": ["demonstrou interesse", "pediu mais informações"]
+  },
+
+  "metadata": {
+    "aiModel": "claude-3.5-sonnet",
+    "sttService": "groq-whisper",
+    "ttsService": "elevenlabs"
+  }
+}
+```
+
+### 3.4 Possíveis Resultados (outcome)
+
+| Outcome | Descrição | Ação no Nurturing |
+|---------|-----------|-------------------|
+| `converted` | Lead agendou/converteu | Criar agendamento Belle → FIM |
+| `not_convinced` | Atendeu mas não convenceu | Disparar Flow Builder |
+| `no_answer` | Não atendeu | Disparar Flow Builder |
+| `busy` | Linha ocupada | Reagendar ligação |
+| `failed` | Erro técnico | Log + Reagendar |
+| `voicemail` | Caixa postal | Tratar como não atendeu |
+
+### 3.5 Modificações Necessárias no LigAI
+
+**Total estimado: ~150-200 linhas de código**
+
+| Arquivo | Modificação | Linhas |
+|---------|-------------|--------|
+| `src/api/routes.js` | Novo endpoint POST /api/calls/originate | +50 |
+| `src/call-manager.js` | Disparo de webhook ao fim da ligação | +60 |
+| `src/call-manager.js` | Gravação de áudio da ligação | +40 |
+| `src/api/routes.js` | Endpoint GET /api/calls/:id/audio | +20 |
+| `src/db/database.js` | Campos para webhookUrl e gravação | +20 |
+
+### 3.6 Fluxo Completo de uma Ligação
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                           FLUXO DE UMA LIGAÇÃO                               │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                              │
+│  [1] NURTURING                                                               │
+│      Queue Service detecta lead pronto                                       │
+│      │                                                                       │
+│      ▼                                                                       │
+│  ┌────────────────────────────────────────────────────────────────────┐     │
+│  │ POST http://ligai:3000/api/calls/originate                         │     │
+│  │ { phone, leadId, step, webhookUrl, context }                       │     │
+│  └────────────────────────────────────────────────────────────────────┘     │
+│      │                                                                       │
+│      ▼ (resposta imediata: callId)                                          │
+│                                                                              │
+│  [2] LIGAI                                                                   │
+│      Recebe request → Inicia ligação via AMI                                 │
+│      │                                                                       │
+│      ▼                                                                       │
+│      AudioSocket conecta → IA conversa → Grava áudio                        │
+│      │                                                                       │
+│      ▼ (ligação termina)                                                    │
+│      Salva transcrição e áudio                                              │
+│      │                                                                       │
+│      ▼                                                                       │
+│  ┌────────────────────────────────────────────────────────────────────┐     │
+│  │ POST {webhookUrl}                                                  │     │
+│  │ { callId, result, transcript, timing, audio, analysis }           │     │
+│  └────────────────────────────────────────────────────────────────────┘     │
+│      │                                                                       │
+│      ▼                                                                       │
+│                                                                              │
+│  [3] NURTURING                                                               │
+│      Recebe webhook → Processa resultado                                     │
+│      │                                                                       │
+│      ├── converted → Belle.gravarAgendamento() → FIM                        │
+│      │                                                                       │
+│      ├── not_convinced → FlowBuilder.trigger() → WhatsApp                   │
+│      │                                                                       │
+│      └── no_answer → FlowBuilder.trigger() → WhatsApp                       │
+│                                                                              │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+### 3.7 Tratamento de Erros
+
+| Cenário | Comportamento |
+|---------|---------------|
+| LigAI indisponível | Nurturing tenta novamente em 5 min (máx 3 tentativas) |
+| Webhook falha | LigAI tenta reenviar 3x com backoff exponencial |
+| Timeout na ligação | LigAI envia webhook com status "timeout" |
+| Erro no Asterisk | LigAI envia webhook com status "failed" e detalhes |
+
+### 3.8 Configuração de Ambiente
+
+```env
+# No .env do Sistema Nurturing
+LIGAI_API_URL=http://127.0.0.1:3000
+LIGAI_API_KEY=<TOKEN_SEGURO>
+
+# No .env do LigAI (já existente, apenas adicionar)
+WEBHOOK_RETRY_ATTEMPTS=3
+WEBHOOK_RETRY_DELAY=5000
+AUDIO_RECORDING_PATH=/var/lib/ligai/recordings
+```
+
+---
+
+## 4. Fluxo de Nurturing
+
+### 4.1 Timeline dos 5 Passos
 
 ```
      0h         24h         48h         72h         96h        144h        192h
@@ -191,7 +450,7 @@ Lead ABC Station
   TEXTO      VÍDEO      IMAGEM     FINAL       LOOP        LOOP        LOOP
 ```
 
-### 3.2 Detalhamento por Passo
+### 4.2 Detalhamento por Passo
 
 #### PASSO 1 (Hora 0) - Primeiro Contato
 
@@ -299,7 +558,7 @@ Lead ABC Station
     └── Cancelamento manual → FIM
 ```
 
-### 3.3 Janelas de Horário para WhatsApp
+### 4.3 Janelas de Horário para WhatsApp
 
 | Período | Horário | Pode Enviar? |
 |---------|---------|--------------|
@@ -311,7 +570,7 @@ Lead ABC Station
 | **Noite** | **17:00 - 20:00** | ✅ Sim |
 | Noite | 20:00 - 00:00 | ❌ Não |
 
-### 3.4 Tabela de Status do Lead
+### 4.4 Tabela de Status do Lead
 
 | Status | Descrição | Próxima Ação |
 |--------|-----------|--------------|
@@ -336,9 +595,9 @@ Lead ABC Station
 
 ---
 
-## 4. Sistema de Fila Automática
+## 5. Sistema de Fila Automática
 
-### 4.1 Fluxo de Entrada
+### 5.1 Fluxo de Entrada
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
@@ -373,7 +632,7 @@ Lead ABC Station
 └───────────────────────────────┘  └───────────────────────────────────────────┘
 ```
 
-### 4.2 Interface de Configurações
+### 5.2 Interface de Configurações
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
@@ -420,7 +679,7 @@ Lead ABC Station
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
 
-### 4.3 Exemplos de Funcionamento
+### 5.3 Exemplos de Funcionamento
 
 | Cenário | Lead Chega | Ação do Sistema |
 |---------|------------|-----------------|
@@ -432,13 +691,13 @@ Lead ABC Station
 
 ---
 
-## 5. Flow Builder
+## 6. Flow Builder
 
-### 5.1 Visão Geral
+### 6.1 Visão Geral
 
 O Flow Builder é um **editor visual drag-and-drop** baseado em React Flow que permite criar fluxos de automação personalizados para WhatsApp e outras integrações.
 
-### 5.2 Estatísticas do Sistema
+### 6.2 Estatísticas do Sistema
 
 | Aspecto | Valor |
 |---------|-------|
@@ -447,7 +706,7 @@ O Flow Builder é um **editor visual drag-and-drop** baseado em React Flow que p
 | Status de Fluxo | 4 (draft, active, paused, archived) |
 | Operadores de Condição | 15+ |
 
-### 5.3 Tipos de Gatilhos
+### 6.3 Tipos de Gatilhos
 
 | Gatilho | Descrição | Configuração |
 |---------|-----------|--------------|
@@ -459,7 +718,7 @@ O Flow Builder é um **editor visual drag-and-drop** baseado em React Flow que p
 | **Agendamento** | Execução por CRON | `expression` |
 | **Manual** | Execução via API/UI | Nenhuma |
 
-### 5.4 Tipos de Nós
+### 6.4 Tipos de Nós
 
 #### Categoria: Gatilhos 🟡
 
@@ -499,7 +758,7 @@ O Flow Builder é um **editor visual drag-and-drop** baseado em React Flow que p
 |----|------|-----------|
 | Fim | `end` | Finaliza o fluxo |
 
-### 5.5 Configuração dos Nós
+### 6.5 Configuração dos Nós
 
 #### WhatsApp Message
 ```json
@@ -560,7 +819,7 @@ O Flow Builder é um **editor visual drag-and-drop** baseado em React Flow que p
 }
 ```
 
-### 5.6 Sistema de Variáveis
+### 6.6 Sistema de Variáveis
 
 **Sintaxe:** `{{variavel}}` ou `{{objeto.campo}}`
 
@@ -572,7 +831,7 @@ O Flow Builder é um **editor visual drag-and-drop** baseado em React Flow que p
 | Variável Custom | (nome) | `{{minha_variavel}}` |
 | Resposta IA | (nome) | `{{ai_response}}` |
 
-### 5.7 Operadores de Condição
+### 6.7 Operadores de Condição
 
 #### String
 | Operador | Descrição |
@@ -600,7 +859,7 @@ O Flow Builder é um **editor visual drag-and-drop** baseado em React Flow que p
 | `in_list` | Está na lista |
 | `not_in_list` | Não está na lista |
 
-### 5.8 Interface Visual
+### 6.8 Interface Visual
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────────────────┐
@@ -655,78 +914,18 @@ O Flow Builder é um **editor visual drag-and-drop** baseado em React Flow que p
 
 ---
 
-## 6. Monitoramento de Ligações
+## 7. Histórico de Ligações
 
-### 6.1 Página Fila - Visão Geral
+> **Nota**: Como o Sistema Nurturing se comunica com o LigAI via API/Webhook (sem WebSocket), **não há monitoramento em tempo real** das ligações. Os dados são recebidos apenas após a ligação terminar via webhook.
 
-A página Fila possui **duas abas principais**: Tempo Real e Histórico.
+### 7.1 Página de Histórico - Visão Geral
 
-### 6.2 Aba Tempo Real
-
-```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│  📋 Fila de Processamento                        🟢 Sistema Ativo (2/2)     │
-├─────────────────────────────────────────────────────────────────────────────┤
-│                                                                              │
-│  [🔴 Tempo Real]  [📊 Histórico]                      ← Abas de navegação   │
-│                                                                              │
-│  ═══════════════════════════════════════════════════════════════════════    │
-│                                                                              │
-│  🔴 EM LIGAÇÃO (2)                                                          │
-│  ┌─────────────────────────────────────────────────────────────────────┐    │
-│  │ 📞 João Silva      │ Passo 1 │ 02:34 ⏱️          [Ver Conversa]    │    │
-│  │ 📞 Maria Santos    │ Passo 2 │ 01:12 ⏱️          [Ver Conversa]    │    │
-│  └─────────────────────────────────────────────────────────────────────┘    │
-│                                                                              │
-│  Ao clicar em "Ver Conversa" (Modal de Monitoramento):                      │
-│  ┌─────────────────────────────────────────────────────────────────────┐    │
-│  │ 🎙️ LIGAÇÃO AO VIVO - João Silva                      [✕ Fechar]   │    │
-│  │ ───────────────────────────────────────────────────────────────────│    │
-│  │ 🤖 IA: Olá João, aqui é da Addebitare...                           │    │
-│  │ 👤 Lead: Oi, tudo bem?                                              │    │
-│  │ 🤖 IA: Tudo ótimo! Estou ligando porque...                         │    │
-│  │ 👤 Lead: Ah sim, eu tenho um precatório...                         │    │
-│  │ 🤖 IA: Que bom! Posso agendar uma reunião... █                     │    │
-│  │                                   (transcrevendo ao vivo)           │    │
-│  └─────────────────────────────────────────────────────────────────────┘    │
-│                                                                              │
-│  ⏳ AGUARDANDO (15)                                                         │
-│  ┌─────────────────────────────────────────────────────────────────────┐    │
-│  │  #1 │ Ana Costa      │ 84 99777-5678 │ Chegou há 2 min  │ [⏭ Pular] │    │
-│  │  #2 │ Pedro Lima     │ 84 99666-9012 │ Chegou há 5 min  │ [⏭ Pular] │    │
-│  │  #3 │ Lucas Souza    │ 84 99555-3456 │ Chegou há 8 min  │ [⏭ Pular] │    │
-│  │  ... mais 12                                                        │    │
-│  └─────────────────────────────────────────────────────────────────────┘    │
-│                                                                              │
-│  🕐 AGENDADOS PARA DEPOIS                                                   │
-│  ┌─────────────────────────────────────────────────────────────────────┐    │
-│  │  Carla Dias    │ Amanhã 09:00 │ Chegou fora do horário              │    │
-│  │  Bruno Torres  │ Amanhã 09:00 │ Chegou fora do horário              │    │
-│  └─────────────────────────────────────────────────────────────────────┘    │
-│                                                                              │
-│  ✅ PROCESSADOS HOJE (23)                                   [Ver Todos →]   │
-│  ┌─────────────────────────────────────────────────────────────────────┐    │
-│  │  Pedro Lima     │ Passo 1 │ ✅ Converteu      │ 14:20               │    │
-│  │  Julia Santos   │ Passo 2 │ ❌ Não atendeu    │ 14:15               │    │
-│  │  Roberto Dias   │ Passo 1 │ ⚠️ Não convenceu  │ 14:10               │    │
-│  └─────────────────────────────────────────────────────────────────────┘    │
-│                                                                              │
-│  CONTROLES:                                                                  │
-│  [⏸️ Pausar Sistema] [🔄 Reprocessar Fila] [⚙️ Configurações]              │
-│                                                                              │
-└─────────────────────────────────────────────────────────────────────────────┘
-```
-
-### 6.3 Aba Histórico (com Filtros)
+A página de Histórico mostra todas as ligações realizadas, com dados recebidos via webhook do LigAI após cada ligação.
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
-│  📋 Fila de Processamento                        🟢 Sistema Ativo (2/2)     │
+│  📊 Histórico de Ligações                            🟢 Sistema Ativo       │
 ├─────────────────────────────────────────────────────────────────────────────┤
-│                                                                              │
-│  [🔴 Tempo Real]  [📊 Histórico]                      ← Abas de navegação   │
-│                                                                              │
-│  ═══════════════════════════════════════════════════════════════════════    │
 │                                                                              │
 │  ┌─── FILTROS ────────────────────────────────────────────────────────┐     │
 │  │                                                                     │     │
@@ -742,7 +941,6 @@ A página Fila possui **duas abas principais**: Tempo Real e Histórico.
 │  │  │ ✅ Converteu │                 │ Passo 1     │                   │     │
 │  │  │ ❌ Não atendeu│                │ Passo 2     │                   │     │
 │  │  │ ⚠️ Não convenceu│              │ Passo 3     │                   │     │
-│  │  │ 🔄 Em andamento│               │ Passo 4     │                   │     │
 │  │  └─────────────┘                 └─────────────┘                   │     │
 │  │                                                                     │     │
 │  │  🔍 Buscar lead: [________________________]       [🔍 Filtrar]     │     │
@@ -774,7 +972,9 @@ A página Fila possui **duas abas principais**: Tempo Real e Histórico.
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
 
-### 6.4 Modal de Detalhes da Ligação
+### 7.2 Modal de Detalhes da Ligação
+
+Ao clicar em uma ligação no histórico, abre o modal com detalhes completos (dados recebidos via webhook):
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
@@ -788,13 +988,14 @@ A página Fila possui **duas abas principais**: Tempo Real e Histórico.
 │  ⏱️ Duração: 5 minutos e 12 segundos                                        │
 │  ✅ Resultado: CONVERTEU                                                     │
 │                                                                              │
-│  ┌─── 🔊 ÁUDIO ───────────────────────────────────────────────────────┐     │
+│  ┌─── 🔊 ÁUDIO (via LigAI) ──────────────────────────────────────────┐     │
 │  │  [▶️ Play]  ▬▬▬▬▬▬▬●▬▬▬▬▬▬▬▬▬▬▬▬▬▬  2:34 / 5:12   🔊 ━━━━━━━○     │     │
 │  │                                                                     │     │
+│  │  Fonte: http://ligai:3000/api/calls/call-uuid/audio                │     │
 │  │  [⏪ -10s]  [⏩ +10s]  [⬇️ Download]  [1x ▼]                        │     │
 │  └─────────────────────────────────────────────────────────────────────┘     │
 │                                                                              │
-│  ┌─── 💬 TRANSCRIÇÃO ─────────────────────────────────────────────────┐     │
+│  ┌─── 💬 TRANSCRIÇÃO (recebida via webhook) ─────────────────────────┐     │
 │  │                                                                     │     │
 │  │  14:15:03  🤖 IA                                                   │     │
 │  │  Olá Pedro, aqui é da Addebitare. Tudo bem com você?               │     │
@@ -815,7 +1016,7 @@ A página Fila possui **duas abas principais**: Tempo Real e Histórico.
 │  │                                                                     │     │
 │  └─────────────────────────────────────────────────────────────────────┘     │
 │                                                                              │
-│  ┌─── 📊 ANÁLISE DA IA ───────────────────────────────────────────────┐     │
+│  ┌─── 📊 ANÁLISE DA IA (recebida via webhook) ───────────────────────┐     │
 │  │                                                                     │     │
 │  │  😊 Sentimento: Positivo                                           │     │
 │  │  🎯 Objeções identificadas: Tempo de espera                        │     │
@@ -828,61 +1029,73 @@ A página Fila possui **duas abas principais**: Tempo Real e Histórico.
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
 
-### 6.5 Filtros Disponíveis
+### 7.3 Fonte dos Dados
+
+| Dado | Origem | Como é Recebido |
+|------|--------|-----------------|
+| Resultado da ligação | LigAI | Webhook após fim da ligação |
+| Transcrição completa | LigAI | Campo `transcript` do webhook |
+| Análise de sentimento | LigAI | Campo `analysis` do webhook |
+| URL do áudio | LigAI | Campo `audio.url` do webhook |
+| Timing (duração, início, fim) | LigAI | Campo `timing` do webhook |
+
+### 7.4 Filtros Disponíveis
 
 | Filtro | Opções |
 |--------|--------|
 | **Período** | Hoje, Ontem, Últimos 7 dias, Este mês, Personalizado (data início/fim) |
-| **Resultado** | Converteu, Não atendeu, Não convenceu, Em andamento, Todos |
+| **Resultado** | Converteu, Não atendeu, Não convenceu, Todos |
 | **Passo** | Passo 1, Passo 2, Passo 3, Passo 4, Todos |
 | **Busca** | Nome do lead, telefone |
 
-### 6.6 Funcionalidades do Modal de Detalhes
+### 7.5 Funcionalidades do Modal de Detalhes
 
 | Funcionalidade | Descrição |
 |----------------|-----------|
-| ▶️ Reproduzir áudio | Player de áudio com controles (play, pause, seek) |
-| 📝 Transcrição | Conversa completa com timestamps |
-| 📊 Análise IA | Sentimento, objeções, técnicas usadas, resumo |
-| ⬇️ Download | Baixar áudio da ligação |
-| 🔗 Ver Lead | Link direto para página de detalhes do lead |
+| ▶️ Reproduzir áudio | Streaming do áudio via API do LigAI |
+| 📝 Transcrição | Conversa completa recebida no webhook |
+| 📊 Análise IA | Sentimento, objeções (do webhook) |
+| ⬇️ Download | Download via GET /api/calls/:id/audio do LigAI |
+| 🔗 Ver Lead | Link para página de detalhes do lead |
 
-### 6.7 Resumo: Onde Acessar Cada Informação
+### 7.6 Comparativo: Com e Sem Tempo Real
 
-| Informação | Aba Tempo Real | Aba Histórico | Detalhes Lead |
-|------------|----------------|---------------|---------------|
-| Conversa ao vivo | ✅ | ❌ | ❌ |
-| Ligações do dia (resumo) | ✅ | ✅ | ✅ |
-| Histórico completo com filtros | ❌ | ✅ | ❌ |
-| Reproduzir áudio | ❌ | ✅ | ✅ |
-| Transcrição completa | ✅ (ao vivo) | ✅ | ✅ |
-| Análise de sentimento | ❌ | ✅ | ✅ |
-| Timeline completa (WhatsApp + Ligação) | ❌ | ❌ | ✅ |
+| Aspecto | Com Tempo Real (WebSocket) | Sem Tempo Real (Webhook) |
+|---------|---------------------------|--------------------------|
+| Ver conversa ao vivo | ✅ Sim | ❌ Não |
+| Transcrição em tempo real | ✅ Sim | ❌ Não (só após fim) |
+| Complexidade | Alta (WebSocket bidirecional) | Baixa (HTTP simples) |
+| Acoplamento | Alto (sistema único) | Baixo (sistemas separados) |
+| Manutenção | Mais complexa | Mais simples |
+| Escalabilidade | Limitada | Melhor |
+| Dados disponíveis | Em tempo real | Após fim da ligação |
+
+**Decisão**: Optamos por **não ter monitoramento em tempo real** para manter os sistemas desacoplados e simplificar a arquitetura. Todos os dados da ligação são recebidos via webhook após seu término.
 
 ---
 
-## 7. Interface do CRM
+## 8. Interface do CRM
 
-### 7.1 Estrutura de Navegação
+### 8.1 Estrutura de Navegação
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────────────┐
-│  🏠 LigAI                                                          👤 Operador     │
+│  🔄 Nurturing                                                      👤 Operador     │
 ├─────────────────────────────────────────────────────────────────────────────────────┤
 │                                                                                     │
-│  ┌──────────┬────────┬────────┬──────────┬──────────┬────────┬──────────┬────────┐ │
-│  │Dashboard │  Fila  │ Leads  │  Funil   │Conversas │ Flows  │Instâncias│   ⚙️   │ │
-│  └──────────┴────────┴────────┴──────────┴──────────┴────────┴──────────┴────────┘ │
+│  ┌──────────┬──────────┬────────┬──────────┬──────────┬────────┬──────────┬──────┐ │
+│  │Dashboard │ Histórico│ Leads  │  Funil   │Conversas │ Flows  │Instâncias│  ⚙️  │ │
+│  └──────────┴──────────┴────────┴──────────┴──────────┴────────┴──────────┴──────┘ │
 │                                                                                     │
 └─────────────────────────────────────────────────────────────────────────────────────┘
 ```
 
-### 7.2 Páginas do Sistema
+### 8.2 Páginas do Sistema
 
 | Página | Função |
 |--------|--------|
-| **Dashboard** | Métricas em tempo real, atividade recente |
-| **Fila** | Tempo Real (ligações ativas, fila, monitoramento ao vivo) + Histórico (todas ligações com filtros) |
+| **Dashboard** | Métricas, atividade recente, estatísticas |
+| **Histórico** | Todas ligações com filtros (dados via webhook do LigAI) |
 | **Leads** | Lista de todos os leads com filtros |
 | **Funil** | Visão Kanban por passo do nurturing |
 | **Conversas** | Chat estilo WhatsApp |
@@ -890,7 +1103,7 @@ A página Fila possui **duas abas principais**: Tempo Real e Histórico.
 | **Instâncias** | Gerenciar conexões WhatsApp |
 | **⚙️** | Configurações do sistema |
 
-### 7.3 Dashboard Principal
+### 8.3 Dashboard Principal
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
@@ -927,7 +1140,7 @@ A página Fila possui **duas abas principais**: Tempo Real e Histórico.
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
 
-### 7.4 Página de Leads
+### 8.4 Página de Leads
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
@@ -953,7 +1166,7 @@ A página Fila possui **duas abas principais**: Tempo Real e Histórico.
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
 
-### 7.5 Visão Kanban (Funil)
+### 8.5 Visão Kanban (Funil)
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
@@ -984,7 +1197,7 @@ A página Fila possui **duas abas principais**: Tempo Real e Histórico.
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
 
-### 7.6 Página de Conversas (WhatsApp)
+### 8.6 Página de Conversas (WhatsApp)
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
@@ -1022,9 +1235,9 @@ A página Fila possui **duas abas principais**: Tempo Real e Histórico.
 
 ---
 
-## 8. Integrações Externas
+## 9. Integrações Externas
 
-### 8.1 ABC Station (Fonte de Leads)
+### 9.1 ABC Station (Fonte de Leads)
 
 **Tipo:** Webhook de entrada
 
@@ -1053,7 +1266,7 @@ A página Fila possui **duas abas principais**: Tempo Real e Histórico.
 }
 ```
 
-### 8.2 Belle Software (CRM de Agendamentos)
+### 9.2 Belle Software (CRM de Agendamentos)
 
 **Tipo:** API REST com token de autenticação
 
@@ -1080,7 +1293,7 @@ POST /gravarAgendamento
 }
 ```
 
-### 8.3 WhatsApp Meta Cloud API
+### 9.3 WhatsApp Meta Cloud API
 
 **Tipo:** API REST + Webhook de entrada
 
@@ -1182,7 +1395,7 @@ POST https://graph.facebook.com/v18.0/{phone_id}/messages
 }
 ```
 
-### 8.4 Gerenciamento de Múltiplas Instâncias WhatsApp
+### 9.4 Gerenciamento de Múltiplas Instâncias WhatsApp
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
@@ -1212,9 +1425,9 @@ POST https://graph.facebook.com/v18.0/{phone_id}/messages
 
 ---
 
-## 9. Banco de Dados
+## 10. Banco de Dados
 
-### 9.1 Diagrama ER Simplificado
+### 10.1 Diagrama ER Simplificado
 
 ```
 ┌─────────────┐     ┌─────────────────────┐     ┌─────────────────┐
@@ -1233,7 +1446,7 @@ POST https://graph.facebook.com/v18.0/{phone_id}/messages
            └────────────────┘ └────────────────┘
 ```
 
-### 9.2 Tabela: leads
+### 10.2 Tabela: leads
 
 ```sql
 CREATE TABLE leads (
@@ -1270,7 +1483,7 @@ CREATE INDEX idx_leads_phone ON leads(phone);
 CREATE INDEX idx_leads_step ON leads(current_step);
 ```
 
-### 9.3 Tabela: lead_interactions
+### 10.3 Tabela: lead_interactions
 
 ```sql
 CREATE TABLE lead_interactions (
@@ -1300,7 +1513,7 @@ CREATE INDEX idx_interactions_lead ON lead_interactions(lead_id);
 CREATE INDEX idx_interactions_channel ON lead_interactions(channel);
 ```
 
-### 9.4 Tabela: call_records
+### 10.4 Tabela: call_records
 
 ```sql
 CREATE TABLE call_records (
@@ -1351,7 +1564,7 @@ CREATE INDEX idx_call_records_result ON call_records(result);
 CREATE INDEX idx_call_records_step ON call_records(nurture_step);
 ```
 
-### 9.5 Tabela: call_transcripts
+### 10.5 Tabela: call_transcripts
 
 ```sql
 CREATE TABLE call_transcripts (
@@ -1380,7 +1593,7 @@ CREATE INDEX idx_call_transcripts_call ON call_transcripts(call_id);
 CREATE INDEX idx_call_transcripts_timestamp ON call_transcripts(timestamp);
 ```
 
-### 9.6 Tabela: call_events
+### 10.6 Tabela: call_events
 
 ```sql
 CREATE TABLE call_events (
@@ -1398,7 +1611,7 @@ CREATE TABLE call_events (
 CREATE INDEX idx_call_events_call ON call_events(call_id);
 ```
 
-### 9.7 Tabela: whatsapp_flows
+### 10.7 Tabela: whatsapp_flows
 
 ```sql
 CREATE TABLE whatsapp_flows (
@@ -1411,7 +1624,7 @@ CREATE TABLE whatsapp_flows (
 );
 ```
 
-### 9.8 Tabela: whatsapp_flow_steps
+### 10.8 Tabela: whatsapp_flow_steps
 
 ```sql
 CREATE TABLE whatsapp_flow_steps (
@@ -1446,7 +1659,7 @@ CREATE TABLE whatsapp_flow_steps (
 );
 ```
 
-### 9.9 Tabela: whatsapp_instances
+### 10.9 Tabela: whatsapp_instances
 
 ```sql
 CREATE TABLE whatsapp_instances (
@@ -1486,7 +1699,7 @@ CREATE TABLE whatsapp_instances (
 );
 ```
 
-### 9.10 Tabela: system_config
+### 10.10 Tabela: system_config
 
 ```sql
 CREATE TABLE system_config (
@@ -1508,7 +1721,7 @@ INSERT INTO system_config (key, value, description) VALUES
   ('out_of_hours_behavior', 'wait', 'wait ou whatsapp_first');
 ```
 
-### 9.11 Tabela: processing_queue
+### 10.11 Tabela: processing_queue
 
 ```sql
 CREATE TABLE processing_queue (
@@ -1530,7 +1743,7 @@ CREATE INDEX idx_queue_scheduled ON processing_queue(scheduled_for);
 
 ---
 
-## 10. Estrutura de Arquivos
+## 11. Estrutura de Arquivos
 
 ```
 /root/ligai-server/
@@ -1622,9 +1835,9 @@ CREATE INDEX idx_queue_scheduled ON processing_queue(scheduled_for);
 
 ---
 
-## 11. API Endpoints
+## 12. API Endpoints
 
-### 11.1 Webhooks
+### 12.1 Webhooks
 
 | Método | Endpoint | Descrição |
 |--------|----------|-----------|
@@ -1632,7 +1845,7 @@ CREATE INDEX idx_queue_scheduled ON processing_queue(scheduled_for);
 | POST | `/api/webhooks/whatsapp` | Recebe mensagens do WhatsApp |
 | GET | `/api/webhooks/whatsapp` | Verificação do webhook Meta |
 
-### 11.2 Leads
+### 12.2 Leads
 
 | Método | Endpoint | Descrição |
 |--------|----------|-----------|
@@ -1644,7 +1857,7 @@ CREATE INDEX idx_queue_scheduled ON processing_queue(scheduled_for);
 | GET | `/api/leads/:id/interactions` | Histórico de interações |
 | GET | `/api/leads/:id/timeline` | Timeline completa |
 
-### 11.3 Ligações
+### 12.3 Ligações
 
 | Método | Endpoint | Descrição |
 |--------|----------|-----------|
@@ -1657,7 +1870,7 @@ CREATE INDEX idx_queue_scheduled ON processing_queue(scheduled_for);
 | GET | `/api/calls/active` | Ligações em andamento |
 | WS | `/ws/calls/:id/live` | WebSocket transcrição ao vivo |
 
-### 11.4 Flow Builder
+### 12.4 Flow Builder
 
 | Método | Endpoint | Descrição |
 |--------|----------|-----------|
@@ -1670,7 +1883,7 @@ CREATE INDEX idx_queue_scheduled ON processing_queue(scheduled_for);
 | POST | `/api/flows/:id/publish` | Publica fluxo |
 | POST | `/api/flows/:id/pause` | Pausa fluxo |
 
-### 11.5 Instâncias WhatsApp
+### 12.5 Instâncias WhatsApp
 
 | Método | Endpoint | Descrição |
 |--------|----------|-----------|
@@ -1681,7 +1894,7 @@ CREATE INDEX idx_queue_scheduled ON processing_queue(scheduled_for);
 | DELETE | `/api/instances/:id` | Remove instância |
 | POST | `/api/instances/:id/test` | Testa conexão |
 
-### 11.6 Fila de Processamento
+### 12.6 Fila de Processamento
 
 | Método | Endpoint | Descrição |
 |--------|----------|-----------|
@@ -1693,7 +1906,7 @@ CREATE INDEX idx_queue_scheduled ON processing_queue(scheduled_for);
 | POST | `/api/queue/:leadId/skip` | Pula lead na fila |
 | POST | `/api/queue/:leadId/prioritize` | Prioriza lead |
 
-### 11.7 Configurações
+### 12.7 Configurações
 
 | Método | Endpoint | Descrição |
 |--------|----------|-----------|
@@ -1703,7 +1916,7 @@ CREATE INDEX idx_queue_scheduled ON processing_queue(scheduled_for);
 
 ---
 
-## 12. Fases de Implementação
+## 13. Fases de Implementação
 
 ### Fase 1: Infraestrutura Base
 **Prioridade:** Alta | **Impacto no LigAI:** Nenhum
@@ -1766,20 +1979,29 @@ CREATE INDEX idx_queue_scheduled ON processing_queue(scheduled_for);
 
 ---
 
-### Fase 5: Nurturing Engine
-**Prioridade:** Alta | **Impacto no LigAI:** Mínimo (~20 linhas)
+### Fase 5: Nurturing Engine + Integração LigAI
+**Prioridade:** Alta | **Sistema:** Nurturing (port 3001)
 
-**Arquivos:**
-- `nurturing-engine.js`
-- `index.js` (inicialização)
-- `call-manager.js` (injeção de dados do lead)
+**Arquivos do Sistema Nurturing:**
+- `nurturing-engine.js` - Motor de nurturing
+- `ligai-client.js` - Cliente HTTP para API do LigAI
+- `webhooks/ligai-result.js` - Receptor de webhooks do LigAI
+
+**Modificações no LigAI (~150-200 linhas):**
+- `src/api/routes.js` - Endpoint POST /api/calls/originate (+50 linhas)
+- `src/call-manager.js` - Disparo de webhook ao fim da ligação (+60 linhas)
+- `src/call-manager.js` - Gravação de áudio (+40 linhas)
+- `src/api/routes.js` - Endpoint GET /api/calls/:id/audio (+20 linhas)
 
 **Tarefas:**
-1. Scheduler para processar fila
-2. Lógica de transição de status
-3. Integração com LigAI para originar chamadas
-4. Integração com Flow Builder para disparar WhatsApp
-5. Detecção de atendimento/não atendimento/não convencimento
+1. Scheduler para processar fila (Nurturing)
+2. Lógica de transição de status (Nurturing)
+3. Cliente HTTP para POST /api/calls/originate (Nurturing)
+4. Receptor de webhook POST /api/webhooks/ligai-result (Nurturing)
+5. Endpoint /api/calls/originate no LigAI
+6. Disparo de webhook ao fim da ligação no LigAI
+7. Gravação de áudio no LigAI
+8. Integração com Flow Builder para disparar WhatsApp (Nurturing)
 
 ---
 
@@ -1832,31 +2054,32 @@ CREATE INDEX idx_queue_scheduled ON processing_queue(scheduled_for);
 
 ---
 
-### Fase 9: Histórico e Monitoramento de Ligações
-**Prioridade:** Alta | **Impacto no LigAI:** Moderado (~50 linhas em call-manager.js)
+### Fase 9: Histórico de Ligações (via Webhook)
+**Prioridade:** Alta | **Sistema:** Nurturing (port 3001)
 
-**Arquivos Backend:**
+> **Nota**: Não há monitoramento em tempo real. Os dados são recebidos via webhook do LigAI após cada ligação terminar.
+
+**Arquivos Backend (Nurturing):**
 - `call-records-service.js` - CRUD e estatísticas
 - `call-records-routes.js` - API endpoints
-- `call-recording-service.js` - Gravação de áudio
-- `call-analysis-service.js` - Análise de sentimento
+- `webhooks/ligai-result.js` - Salva dados do webhook
 
-**Arquivos Frontend:**
-- `client/src/pages/Queue.jsx` - Página com abas
-- `client/src/components/queue/*.jsx` - Componentes
+**Arquivos Frontend (Nurturing):**
+- `client/src/pages/CallHistory.jsx` - Página de histórico
+- `client/src/components/history/*.jsx` - Componentes
 
 **Tarefas:**
-1. Gravar transcrições em tempo real durante a ligação
-2. Salvar áudio da ligação ao finalizar
-3. Implementar WebSocket para transcrição ao vivo
-4. Criar modal de detalhes com player de áudio
-5. Filtros por período, resultado, passo
-6. Estatísticas do período selecionado
-7. Análise de sentimento pós-ligação (opcional)
+1. Salvar dados da ligação recebidos via webhook (Nurturing)
+2. Criar página de histórico com filtros (Nurturing)
+3. Proxy para streaming de áudio do LigAI (Nurturing)
+4. Modal de detalhes com player de áudio (Nurturing)
+5. Filtros por período, resultado, passo (Nurturing)
+6. Estatísticas do período selecionado (Nurturing)
+7. Exibir análise de sentimento (dados do webhook)
 
 ---
 
-## 13. Variáveis de Ambiente
+## 14. Variáveis de Ambiente
 
 ```env
 # ══════════════════════════════════════════════════════════════════════════════
