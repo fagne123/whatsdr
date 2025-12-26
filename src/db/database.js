@@ -37,9 +37,34 @@ class DatabaseService {
         ended_at DATETIME,
         duration_seconds INTEGER,
         status TEXT DEFAULT 'active',
-        end_reason TEXT
+        end_reason TEXT,
+        lead_id TEXT,
+        step TEXT,
+        webhook_url TEXT,
+        context TEXT,
+        audio_path TEXT,
+        answered_at DATETIME,
+        call_result TEXT
       )
     `);
+
+    // Migração: adicionar colunas se não existirem (para bancos existentes)
+    const columns = this.db.pragma('table_info(calls)').map(c => c.name);
+    const newColumns = [
+      { name: 'lead_id', type: 'TEXT' },
+      { name: 'step', type: 'TEXT' },
+      { name: 'webhook_url', type: 'TEXT' },
+      { name: 'context', type: 'TEXT' },
+      { name: 'audio_path', type: 'TEXT' },
+      { name: 'answered_at', type: 'DATETIME' },
+      { name: 'call_result', type: 'TEXT' }
+    ];
+    for (const col of newColumns) {
+      if (!columns.includes(col.name)) {
+        this.db.exec(`ALTER TABLE calls ADD COLUMN ${col.name} ${col.type}`);
+        console.log(`📦 Coluna ${col.name} adicionada à tabela calls`);
+      }
+    }
 
     // Tabela de transcrições
     this.db.exec(`
@@ -92,6 +117,32 @@ class DatabaseService {
       VALUES (?, ?, 'active', datetime(?, '-3 hours'))
     `);
     return stmt.run(id, phoneNumber, now);
+  }
+
+  createCallWithMeta(id, phoneNumber, leadId, step, webhookUrl, context) {
+    const now = new Date().toISOString().replace('T', ' ').substring(0, 19);
+    const contextJson = context ? JSON.stringify(context) : null;
+    const stmt = this.db.prepare(`
+      INSERT INTO calls (id, phone_number, status, started_at, lead_id, step, webhook_url, context)
+      VALUES (?, ?, 'active', datetime(?, '-3 hours'), ?, ?, ?, ?)
+    `);
+    return stmt.run(id, phoneNumber, now, leadId, step, webhookUrl, contextJson);
+  }
+
+  updateCallResult(id, callResult) {
+    const stmt = this.db.prepare(`UPDATE calls SET call_result = ? WHERE id = ?`);
+    return stmt.run(callResult, id);
+  }
+
+  setAnsweredAt(id) {
+    const now = new Date().toISOString().replace('T', ' ').substring(0, 19);
+    const stmt = this.db.prepare(`UPDATE calls SET answered_at = datetime(?, '-3 hours') WHERE id = ?`);
+    return stmt.run(now, id);
+  }
+
+  setAudioPath(id, audioPath) {
+    const stmt = this.db.prepare(`UPDATE calls SET audio_path = ? WHERE id = ?`);
+    return stmt.run(audioPath, id);
   }
 
   updateCall(id, updates) {

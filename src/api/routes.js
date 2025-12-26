@@ -1,4 +1,5 @@
 const express = require('express');
+const path = require('path');
 const { authMiddleware } = require('./auth');
 
 function setupRoutes(app, authService, db, callManager, amiService) {
@@ -142,6 +143,77 @@ function setupRoutes(app, authService, db, callManager, amiService) {
     } catch (error) {
       console.error('Erro ao encerrar chamada:', error);
       res.status(500).json({ error: 'Erro ao encerrar chamada' });
+    }
+  });
+
+  // === Integration Routes (API/Webhook) ===
+
+  // Endpoint para sistema externo originar chamada com metadados
+  // Não requer autenticação para permitir chamadas do sistema Nurturing
+  router.post('/calls/originate', async (req, res) => {
+    const { phone, leadId, step, webhookUrl, context } = req.body;
+
+    // Validações
+    if (!phone) {
+      return res.status(400).json({ error: 'phone é obrigatório' });
+    }
+
+    // Limpa o número (remove caracteres não numéricos)
+    const cleanPhone = phone.replace(/\D/g, '');
+
+    if (cleanPhone.length < 10) {
+      return res.status(400).json({ error: 'Número de telefone inválido' });
+    }
+
+    try {
+      const result = await callManager.originateCallWithMeta(
+        cleanPhone,
+        leadId || null,
+        step || null,
+        webhookUrl || null,
+        context || null,
+        amiService
+      );
+
+      res.json({
+        success: true,
+        message: 'Chamada iniciada',
+        phone: cleanPhone,
+        leadId: leadId || null,
+        step: step || null,
+        actionId: result.actionId
+      });
+    } catch (error) {
+      console.error('Erro ao originar chamada:', error);
+      res.status(500).json({ error: 'Erro ao originar chamada: ' + error.message });
+    }
+  });
+
+  // Endpoint para download de áudio gravado
+  router.get('/calls/:id/audio', auth, (req, res) => {
+    try {
+      const call = db.getCallById(req.params.id);
+
+      if (!call) {
+        return res.status(404).json({ error: 'Chamada não encontrada' });
+      }
+
+      if (!call.audio_path) {
+        return res.status(404).json({ error: 'Áudio não disponível para esta chamada' });
+      }
+
+      // Verifica se arquivo existe
+      const fs = require('fs');
+      if (!fs.existsSync(call.audio_path)) {
+        return res.status(404).json({ error: 'Arquivo de áudio não encontrado' });
+      }
+
+      res.setHeader('Content-Type', 'audio/wav');
+      res.setHeader('Content-Disposition', `attachment; filename="${req.params.id}.wav"`);
+      res.sendFile(call.audio_path);
+    } catch (error) {
+      console.error('Erro ao buscar áudio:', error);
+      res.status(500).json({ error: 'Erro ao buscar áudio' });
     }
   });
 

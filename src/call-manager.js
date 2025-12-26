@@ -36,6 +36,13 @@ class CallManager {
     // Estado das sessões
     this.sessions = new Map();
 
+    // Chamadas pendentes (aguardando AudioSocket conectar)
+    this.pendingCalls = new Map();
+
+    // Diretório de gravações
+    this.recordingsDir = path.join(__dirname, '..', 'data', 'recordings');
+    this.ensureRecordingsDir();
+
     // Carrega áudio pré-gravado da saudação
     this.greetingAudio = null;
     this.loadGreetingAudio();
@@ -57,6 +64,13 @@ class CallManager {
     }
   }
 
+  ensureRecordingsDir() {
+    if (!fs.existsSync(this.recordingsDir)) {
+      fs.mkdirSync(this.recordingsDir, { recursive: true });
+      console.log(`📁 Diretório de gravações criado: ${this.recordingsDir}`);
+    }
+  }
+
   setupEventHandlers() {
     // Nova chamada iniciada
     this.audioServer.on('callStarted', (sessionId, session) => {
@@ -64,6 +78,16 @@ class CallManager {
       console.log('Session ID:', sessionId);
 
       const startTime = Date.now();
+
+      // Verifica se há chamada pendente com metadados
+      let pendingMeta = null;
+      for (const [phone, meta] of this.pendingCalls) {
+        // Associa a chamada mais recente pendente (FIFO)
+        pendingMeta = meta;
+        this.pendingCalls.delete(phone);
+        console.log(`📋 Metadados associados: leadId=${meta.leadId}, step=${meta.step}`);
+        break;
+      }
 
       // Inicializa estado da sessão
       this.sessions.set(sessionId, {
@@ -76,14 +100,33 @@ class CallManager {
         isSendingGreeting: false,
         isSendingResponse: false,
         startTime: startTime,
-        phoneNumber: null,
-        transcripts: []
+        phoneNumber: pendingMeta?.phone || null,
+        transcripts: [],
+        // Novos campos para integração
+        leadId: pendingMeta?.leadId || null,
+        step: pendingMeta?.step || null,
+        webhookUrl: pendingMeta?.webhookUrl || null,
+        context: pendingMeta?.context || null,
+        audioRecording: [],
+        callResult: null,
+        handshakeCompleted: false
       });
 
       // Salva no banco de dados
       if (this.db) {
         try {
-          this.db.createCall(sessionId, null);
+          if (pendingMeta) {
+            this.db.createCallWithMeta(
+              sessionId,
+              pendingMeta.phone,
+              pendingMeta.leadId,
+              pendingMeta.step,
+              pendingMeta.webhookUrl,
+              pendingMeta.context
+            );
+          } else {
+            this.db.createCall(sessionId, null);
+          }
         } catch (error) {
           console.error('Erro ao salvar chamada no banco:', error.message);
         }
@@ -95,7 +138,9 @@ class CallManager {
           id: sessionId,
           startTime: new Date(startTime).toISOString(),
           status: 'active',
-          phoneNumber: null
+          phoneNumber: pendingMeta?.phone || null,
+          leadId: pendingMeta?.leadId || null,
+          step: pendingMeta?.step || null
         }
       });
     });
@@ -103,15 +148,36 @@ class CallManager {
     // Handshake completado - pode enviar áudio
     this.audioServer.on('handshakeComplete', (sessionId) => {
       console.log('✅ Handshake completado - enviando saudação...');
+
+      const session = this.sessions.get(sessionId);
+      if (session) {
+        session.handshakeCompleted = true;
+        session.callResult = 'answered';
+
+        // Marca momento do atendimento no banco
+        if (this.db) {
+          try {
+            this.db.setAnsweredAt(sessionId);
+            this.db.updateCallResult(sessionId, 'answered');
+          } catch (error) {
+            console.error('Erro ao marcar atendimento:', error.message);
+          }
+        }
+      }
+
       this.sendGreeting(sessionId);
     });
 
     // Frame de áudio recebido
     this.audioServer.on('audioFrame', (sessionId, frame) => {
       const session = this.sessions.get(sessionId);
+      if (!session) return;
+
+      // Grava áudio recebido (do cliente)
+      session.audioRecording.push({ type: 'in', data: Buffer.from(frame) });
 
       // Ignora áudio enquanto IA está falando (evita echo)
-      if (session && (session.isSendingGreeting || session.isSendingResponse)) {
+      if (session.isSendingGreeting || session.isSendingResponse) {
         return;
       }
 
@@ -120,26 +186,54 @@ class CallManager {
     });
 
     // Chamada encerrada
-    this.audioServer.on('callEnded', (sessionId) => {
+    this.audioServer.on('callEnded', async (sessionId) => {
       console.log('📞 ============ CHAMADA ENCERRADA ============');
       console.log('Session ID:', sessionId);
 
       const session = this.sessions.get(sessionId);
+      const duration = session ? Math.floor((Date.now() - session.startTime) / 1000) : 0;
+
+      // Determina resultado se não definido
+      if (session && !session.callResult) {
+        session.callResult = session.handshakeCompleted ? 'answered' : 'not_answered';
+      }
+
+      // Salva áudio gravado
+      let audioPath = null;
+      if (session && session.audioRecording.length > 0) {
+        try {
+          audioPath = await this.saveAudioRecording(sessionId, session.audioRecording);
+          if (this.db && audioPath) {
+            this.db.setAudioPath(sessionId, audioPath);
+          }
+        } catch (error) {
+          console.error('Erro ao salvar gravação:', error.message);
+        }
+      }
 
       // Finaliza no banco de dados
       if (this.db) {
         try {
           this.db.endCall(sessionId, 'hangup');
+          if (session?.callResult) {
+            this.db.updateCallResult(sessionId, session.callResult);
+          }
         } catch (error) {
           console.error('Erro ao finalizar chamada no banco:', error.message);
         }
+      }
+
+      // Dispara webhook se configurado
+      if (session?.webhookUrl) {
+        this.dispatchWebhook(sessionId, session, duration, audioPath);
       }
 
       // Notifica clientes WebSocket
       this.broadcast('call:ended', {
         callId: sessionId,
         endReason: 'hangup',
-        duration: session ? Math.floor((Date.now() - session.startTime) / 1000) : 0
+        duration: duration,
+        callResult: session?.callResult || 'unknown'
       });
 
       // Limpa recursos
@@ -400,6 +494,106 @@ Importante:
     header.writeUInt32LE(dataSize, 40);
 
     return Buffer.concat([header, pcmData]);
+  }
+
+  // === Métodos para Integração (API/Webhook) ===
+
+  async saveAudioRecording(sessionId, audioRecording) {
+    if (!audioRecording || audioRecording.length === 0) return null;
+
+    // Combina todos os frames de áudio (entrada e saída)
+    const allAudio = [];
+    for (const frame of audioRecording) {
+      allAudio.push(frame.data);
+    }
+    const combinedPcm = Buffer.concat(allAudio);
+
+    // Converte para WAV
+    const wavBuffer = this.pcmToWav(combinedPcm);
+
+    // Salva arquivo
+    const filename = `${sessionId.replace(/[^a-zA-Z0-9-]/g, '_')}.wav`;
+    const filePath = path.join(this.recordingsDir, filename);
+
+    fs.writeFileSync(filePath, wavBuffer);
+    console.log(`💾 Áudio salvo: ${filePath} (${(wavBuffer.length / 1024).toFixed(1)} KB)`);
+
+    return filePath;
+  }
+
+  async dispatchWebhook(sessionId, session, duration, audioPath) {
+    if (!session.webhookUrl) return;
+
+    const payload = {
+      event: 'call.completed',
+      callId: sessionId,
+      leadId: session.leadId,
+      step: session.step,
+      phoneNumber: session.phoneNumber,
+      status: 'completed',
+      callResult: session.callResult || 'unknown',
+      duration: duration,
+      transcript: session.transcripts || [],
+      audioUrl: audioPath ? `/api/calls/${sessionId}/audio` : null,
+      context: session.context,
+      timestamp: new Date().toISOString()
+    };
+
+    console.log(`🔔 Disparando webhook para: ${session.webhookUrl}`);
+    console.log(`   Payload: leadId=${payload.leadId}, result=${payload.callResult}, duration=${duration}s`);
+
+    try {
+      const response = await fetch(session.webhookUrl, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-LigAI-Event': 'call.completed',
+          'X-LigAI-CallId': sessionId
+        },
+        body: JSON.stringify(payload)
+      });
+
+      if (response.ok) {
+        console.log(`✅ Webhook enviado com sucesso (${response.status})`);
+      } else {
+        console.error(`❌ Webhook falhou: ${response.status} ${response.statusText}`);
+      }
+    } catch (error) {
+      console.error(`❌ Erro ao enviar webhook: ${error.message}`);
+      // TODO: Implementar fila de retry se necessário
+    }
+  }
+
+  async originateCallWithMeta(phone, leadId, step, webhookUrl, context, amiService) {
+    // Armazena metadados para associar quando AudioSocket conectar
+    const callMeta = {
+      phone,
+      leadId,
+      step,
+      webhookUrl,
+      context,
+      createdAt: Date.now()
+    };
+
+    this.pendingCalls.set(phone, callMeta);
+    console.log(`📋 Chamada pendente registrada: ${phone} (leadId=${leadId})`);
+
+    // Limpa chamadas pendentes antigas (mais de 2 minutos)
+    const now = Date.now();
+    for (const [p, meta] of this.pendingCalls) {
+      if (now - meta.createdAt > 120000) {
+        this.pendingCalls.delete(p);
+      }
+    }
+
+    // Origina chamada via AMI
+    const result = await amiService.originateCall(phone);
+
+    return {
+      callId: null, // Será definido quando AudioSocket conectar
+      actionId: result.actionid,
+      phone: phone
+    };
   }
 
   // === Métodos para API ===
