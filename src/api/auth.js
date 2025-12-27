@@ -74,9 +74,23 @@ class AuthService {
   }
 }
 
+// API Keys válidas (acesso vitalício)
+const VALID_API_KEYS = [
+  'whatsdr',
+  process.env.LIGAI_API_KEY
+].filter(Boolean);
+
 // Middleware de autenticação
 function authMiddleware(authService) {
   return (req, res, next) => {
+    // 1. Verifica API Key (header X-API-Key ou query ?api_key=)
+    const apiKey = req.headers['x-api-key'] || req.query.api_key;
+    if (apiKey && VALID_API_KEYS.includes(apiKey)) {
+      req.user = { userId: 'api-key', username: 'api', role: 'admin' };
+      return next();
+    }
+
+    // 2. Verifica JWT Bearer token
     const authHeader = req.headers.authorization;
 
     if (!authHeader || !authHeader.startsWith('Bearer ')) {
